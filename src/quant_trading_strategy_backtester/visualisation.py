@@ -2,9 +2,21 @@
 Contains functions to display backtest results using Streamlit and Plotly.
 """
 
+import math
+
 import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
+
+from quant_trading_strategy_backtester.backtester import build_trade_ledger
+
+
+def _format_metric(value: float, format_spec: str) -> str:
+    """Format finite metrics and display undefined metrics clearly."""
+    if not math.isfinite(value):
+        return "N/A"
+
+    return f"{value:{format_spec}}"
 
 
 def display_performance_metrics(
@@ -19,9 +31,40 @@ def display_performance_metrics(
     """
     st.header(f"Backtest Results for {company_name}")
     total_return_col, sharpe_ratio_col, max_drawdown_col = st.columns(3)
-    total_return_col.metric("Total Return", f"{metrics['Total Return']:.4%}")
-    sharpe_ratio_col.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.4f}")
-    max_drawdown_col.metric("Max Drawdown", f"{metrics['Max Drawdown']:.4%}")
+    total_return_col.metric(
+        "Total Return", _format_metric(metrics["Total Return"], ".4%")
+    )
+    sharpe_ratio_col.metric(
+        "Sharpe Ratio", _format_metric(metrics["Sharpe Ratio"], ".4f")
+    )
+    max_drawdown_col.metric(
+        "Max Drawdown", _format_metric(metrics["Max Drawdown"], ".4%")
+    )
+
+    if {
+        "Gross Total Return",
+        "Total Costs",
+        "Cost Drag",
+        "Trade Events",
+        "Total Turnover",
+    }.issubset(metrics):
+        gross_return_col, cost_drag_col, total_costs_col = st.columns(3)
+        gross_return_col.metric(
+            "Gross Total Return",
+            _format_metric(metrics["Gross Total Return"], ".4%"),
+        )
+        cost_drag_col.metric("Cost Drag", _format_metric(metrics["Cost Drag"], ".4%"))
+        total_costs_col.metric(
+            "Total Costs", _format_metric(metrics["Total Costs"], ".4%")
+        )
+
+        trade_events_col, turnover_col, _ = st.columns(3)
+        trade_events_col.metric(
+            "Trade Events", _format_metric(metrics["Trade Events"], ".0f")
+        )
+        turnover_col.metric(
+            "Total Turnover", _format_metric(metrics["Total Turnover"], ".4f")
+        )
 
 
 def plot_equity_curve(
@@ -261,3 +304,76 @@ def display_returns_by_month(results: pl.DataFrame) -> None:
             width="content",
             hide_index=True,
         )
+
+
+def display_trade_ledger(results: pl.DataFrame) -> None:
+    """
+    Display cost attribution and trade ledger rows from backtest results.
+
+    Args:
+        results: The backtest results DataFrame.
+    """
+    st.subheader("Cost Attribution")
+    if results.is_empty():
+        st.write("No data available for cost attribution.")
+        return
+
+    total_costs = float(results["transaction_costs"].cast(pl.Float64).sum())
+    total_turnover = float(results["trade_turnover"].cast(pl.Float64).sum())
+    trade_events = results.filter(pl.col("trade_turnover") > 0).height
+
+    costs_col, turnover_col, events_col = st.columns(3)
+    costs_col.metric("Total Costs", f"{total_costs:.4%}")
+    turnover_col.metric("Total Turnover", f"{total_turnover:.4f}")
+    events_col.metric("Trade Events", f"{trade_events}")
+
+    st.subheader("Trade Ledger")
+    ledger = build_trade_ledger(results)
+    if ledger.is_empty():
+        st.write("No trades were generated for this backtest.")
+        return
+
+    display_columns = [
+        "Date",
+        "Action",
+        "Reason",
+        "Signal",
+        "Turnover",
+        "Gross Return",
+        "Transaction Costs",
+        "Net Return",
+        "Cumulative Costs",
+        "Equity",
+        "Holding Period Days",
+    ]
+    optional_columns = ["Leg 1 Weight", "Leg 2 Weight", "Z-Score"]
+    display_columns.extend(
+        column
+        for column in optional_columns
+        if column in ledger.columns and ledger[column].null_count() < ledger.height
+    )
+
+    ledger_display = ledger.select(display_columns).with_columns(
+        [
+            pl.col("Turnover").round(4),
+            (pl.col("Gross Return") * 100).round(4).alias("Gross Return (%)"),
+            (pl.col("Transaction Costs") * 100).round(4).alias("Transaction Costs (%)"),
+            (pl.col("Net Return") * 100).round(4).alias("Net Return (%)"),
+            (pl.col("Cumulative Costs") * 100).round(4).alias("Cumulative Costs (%)"),
+            pl.col("Equity").round(2),
+        ]
+    )
+    ledger_display = ledger_display.drop(
+        [
+            "Gross Return",
+            "Transaction Costs",
+            "Net Return",
+            "Cumulative Costs",
+        ]
+    )
+
+    st.dataframe(
+        ledger_display.to_pandas(),
+        width="stretch",
+        hide_index=True,
+    )

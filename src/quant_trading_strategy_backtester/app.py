@@ -45,6 +45,7 @@ from quant_trading_strategy_backtester.utils import (
 from quant_trading_strategy_backtester.visualisation import (
     display_performance_metrics,
     display_returns_by_month,
+    display_trade_ledger,
     plot_equity_curve,
     plot_pairs_spread,
     plot_strategy_returns,
@@ -91,6 +92,77 @@ def _get_final_backtest_data(
     else:
         st.info("Displaying held-out test-period backtest results.")
     return validation_data
+
+
+def _get_final_backtest_results(
+    results: pl.DataFrame,
+    final_backtest_data: pl.DataFrame,
+    use_validation_data: bool,
+    initial_capital: float = 100000.0,
+) -> pl.DataFrame:
+    """
+    Return final results while preserving rolling context for validation.
+
+    Args:
+        results: Backtest results calculated over the full context data.
+        final_backtest_data: Rows to display and score.
+        use_validation_data: Whether final results should be limited to
+            validation rows.
+        initial_capital: Capital used to reset the displayed equity curve.
+
+    Returns:
+        Full results for plain backtests, or validation-period rows with
+        cumulative columns reset to the validation start.
+    """
+    if not use_validation_data:
+        return results
+
+    if final_backtest_data.is_empty():
+        return results.head(0)
+
+    validation_dates = final_backtest_data.select(pl.col("Date").unique())
+    final_results = results.join(validation_dates, on="Date", how="inner")
+    return _reset_cumulative_result_columns(final_results, initial_capital)
+
+
+def _reset_cumulative_result_columns(
+    results: pl.DataFrame, initial_capital: float
+) -> pl.DataFrame:
+    """Reset cumulative returns and costs from the first displayed row."""
+    if results.is_empty():
+        return results
+
+    return results.with_columns(
+        [
+            (1 + pl.col("gross_strategy_returns"))
+            .cum_prod()
+            .alias("gross_cumulative_returns"),
+            (1 + pl.col("strategy_returns")).cum_prod().alias("cumulative_returns"),
+            (initial_capital * (1 + pl.col("strategy_returns")).cum_prod()).alias(
+                "equity_curve"
+            ),
+            pl.col("transaction_costs").cum_sum().alias("cumulative_transaction_costs"),
+        ]
+    )
+
+
+def _get_performance_metrics_for_results(
+    data: pl.DataFrame,
+    strategy_type: str,
+    strategy_params: dict[str, Any],
+    tickers: str | list[str],
+    results: pl.DataFrame,
+) -> dict[str, float]:
+    """Return performance metrics for an already-calculated result set."""
+    strategy = create_strategy(strategy_type, strategy_params)
+    backtester = Backtester(data, strategy, tickers=tickers)
+    backtester.results = results
+    metrics = backtester.get_performance_metrics()
+    assert metrics is not None, (
+        "No results available for the selected ticker and date range"
+    )
+
+    return metrics
 
 
 # Trading strategy preparation functions
@@ -636,8 +708,15 @@ def main():
         st.write("No validation data available for the selected ticker and date range")
         return
 
-    results, metrics = _cached_run_backtest(
-        backtest_data, strategy_type, strategy_params, tickers
+    context_data = data if use_validation_data else backtest_data
+    context_results, _ = _cached_run_backtest(
+        context_data, strategy_type, strategy_params, tickers
+    )
+    results = _get_final_backtest_results(
+        context_results, backtest_data, use_validation_data
+    )
+    metrics = _get_performance_metrics_for_results(
+        backtest_data, strategy_type, strategy_params, tickers, results
     )
 
     # Save only the final backtest result, and only once per unique
@@ -649,6 +728,12 @@ def main():
         backtester.results = results
         backtester.save_results()
         st.session_state["_last_saved_key"] = _save_key
+
+    if use_validation_data and metrics.get("Trade Events", 1.0) == 0:
+        st.warning(
+            "The selected strategy produced no trades over the displayed "
+            "validation period, so risk-adjusted metrics may be undefined."
+        )
 
     display_performance_metrics(metrics, company_display)
     plot_equity_curve(
@@ -667,6 +752,7 @@ def main():
         )
     plot_strategy_returns(results, ticker_display, company_display)
     display_returns_by_month(results)
+    display_trade_ledger(results)
 
     # Display the raw data from Yahoo Finance for the backtest period
     st.header(f"Raw Data for {company_display}")
