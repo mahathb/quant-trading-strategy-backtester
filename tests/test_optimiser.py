@@ -15,8 +15,10 @@ from quant_trading_strategy_backtester.app import (
     prepare_pairs_trading_strategy_with_optimisation,
     prepare_single_ticker_strategy_with_optimisation,
 )
+from quant_trading_strategy_backtester.cointegration import CointegrationResult
 from quant_trading_strategy_backtester.optimiser import (
     _split_data,
+    get_training_data,
     get_validation_data,
     optimise_buy_and_hold_ticker,
     optimise_pairs_trading_tickers,
@@ -26,6 +28,19 @@ from quant_trading_strategy_backtester.optimiser import (
     run_optimisation,
     walk_forward_optimise,
 )
+
+
+def _cointegration_result(is_cointegrated: bool) -> CointegrationResult:
+    """Return a deterministic cointegration result for optimiser tests."""
+    return CointegrationResult(
+        is_cointegrated=is_cointegrated,
+        p_value=0.01 if is_cointegrated else 0.5,
+        test_statistic=-4.0 if is_cointegrated else -1.0,
+        critical_value_1pct=-3.9,
+        critical_value_5pct=-3.3,
+        critical_value_10pct=-3.0,
+        reason=None if is_cointegrated else "Pair is not cointegrated",
+    )
 
 
 def test_optimise_buy_and_hold_ticker(monkeypatch):
@@ -201,6 +216,10 @@ def test_optimise_pairs_trading_tickers(monkeypatch):
         "quant_trading_strategy_backtester.optimiser.optimise_strategy_params",
         mock_optimise_strategy_params,
     )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.evaluate_cointegration",
+        lambda *_args, **_kwargs: _cointegration_result(True),
+    )
 
     start_date = datetime.date(2020, 1, 1)
     end_date = datetime.date(2020, 12, 31)
@@ -279,6 +298,10 @@ def test_optimise_pairs_trading_tickers_ranks_fixed_pairs_on_train(monkeypatch):
     )
     monkeypatch.setattr(
         "quant_trading_strategy_backtester.optimiser.run_backtest", mock_run_backtest
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.evaluate_cointegration",
+        lambda *_args, **_kwargs: _cointegration_result(True),
     )
 
     best_pair, best_params, metrics = optimise_pairs_trading_tickers(
@@ -364,6 +387,10 @@ def test_optimise_pairs_trading_tickers_ranks_optimised_pairs_on_train(
     monkeypatch.setattr(
         "quant_trading_strategy_backtester.optimiser.run_backtest", mock_run_backtest
     )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.evaluate_cointegration",
+        lambda *_args, **_kwargs: _cointegration_result(True),
+    )
 
     best_pair, best_params, metrics = optimise_pairs_trading_tickers(
         mock_top_companies,
@@ -380,6 +407,111 @@ def test_optimise_pairs_trading_tickers_ranks_optimised_pairs_on_train(
         "exit_z_score": 0.5,
     }
     assert metrics["Sharpe Ratio"] == -1.0
+
+
+def test_optimise_pairs_trading_tickers_filters_non_cointegrated_pairs(
+    monkeypatch,
+) -> None:
+    """Verify automatic pair selection rejects non-cointegrated candidates."""
+    mock_top_companies = [("AAPL", 1000000.0), ("GOOGL", 900000.0), ("MSFT", 800000.0)]
+    dates = [datetime.date(2020, 1, 1) + datetime.timedelta(days=i) for i in range(100)]
+    base_data = pl.DataFrame(
+        {
+            "Date": dates,
+            "Close_1": [100.0 + i * 0.1 for i in range(100)],
+            "Close_2": [200.0 + i * 0.2 for i in range(100)],
+        }
+    )
+    strategy_params = {"window": 20, "entry_z_score": 2.0, "exit_z_score": 0.5}
+    train_scores = {
+        ("AAPL", "GOOGL"): 99.0,
+        ("AAPL", "MSFT"): 2.0,
+        ("GOOGL", "MSFT"): 1.0,
+    }
+
+    def mock_load_data(ticker1, ticker2, *_args, **_kwargs):
+        return base_data.with_columns(pl.lit(f"{ticker1}/{ticker2}").alias("Pair"))
+
+    def mock_evaluate_cointegration(data, **_kwargs):
+        pair = tuple(data["Pair"][0].split("/"))
+        return _cointegration_result(pair != ("AAPL", "GOOGL"))
+
+    def mock_run_backtest(data, strategy_type, params, tickers):
+        pair = tuple(tickers)
+        return None, {
+            "Sharpe Ratio": train_scores[pair],
+            "Total Return": 0.1,
+            "Max Drawdown": -0.05,
+        }
+
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.load_yfinance_data_two_tickers",
+        mock_load_data,
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.is_same_company",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.evaluate_cointegration",
+        mock_evaluate_cointegration,
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.run_backtest", mock_run_backtest
+    )
+
+    best_pair, _, metrics = optimise_pairs_trading_tickers(
+        mock_top_companies,
+        datetime.date(2020, 1, 1),
+        datetime.date(2020, 12, 31),
+        strategy_params,
+        optimise=False,
+    )
+
+    assert best_pair == ("AAPL", "MSFT")
+    assert metrics["Sharpe Ratio"] == 2.0
+
+
+def test_optimise_pairs_trading_tickers_raises_when_all_pairs_fail_filter(
+    monkeypatch,
+) -> None:
+    """Verify pair selection fails clearly when no candidate is cointegrated."""
+    mock_top_companies = [("AAPL", 1000000.0), ("GOOGL", 900000.0)]
+    dates = [datetime.date(2020, 1, 1) + datetime.timedelta(days=i) for i in range(100)]
+    mock_polars_data = pl.DataFrame(
+        {
+            "Date": dates,
+            "Close_1": [100.0 + i * 0.1 for i in range(100)],
+            "Close_2": [200.0 + i * 0.2 for i in range(100)],
+        }
+    )
+    strategy_params = {"window": 20, "entry_z_score": 2.0, "exit_z_score": 0.5}
+
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.load_yfinance_data_two_tickers",
+        lambda *_args, **_kwargs: mock_polars_data,
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.is_same_company",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.evaluate_cointegration",
+        lambda *_args, **_kwargs: _cointegration_result(False),
+    )
+    monkeypatch.setattr(
+        "quant_trading_strategy_backtester.optimiser.run_backtest",
+        lambda *_args, **_kwargs: pytest.fail("Backtest should not run"),
+    )
+
+    with pytest.raises(ValueError, match="no cointegrated pair"):
+        optimise_pairs_trading_tickers(
+            mock_top_companies,
+            datetime.date(2020, 1, 1),
+            datetime.date(2020, 12, 31),
+            strategy_params,
+            optimise=False,
+        )
 
 
 def test_handle_pairs_trading_optimisation(monkeypatch):
@@ -871,6 +1003,24 @@ def test_get_validation_data_walk_forward():
     assert len(validation_data) == 10
     assert validation_data["Close"][0] == 50
     assert validation_data["Close"][-1] == 59
+
+
+def test_get_training_data_standard_split():
+    """Verify standard optimisation training uses the 70% train split."""
+    data = pl.DataFrame({"Close": list(range(100))})
+    training_data = get_training_data(data)
+    assert len(training_data) == 70
+    assert training_data["Close"][0] == 0
+    assert training_data["Close"][-1] == 69
+
+
+def test_get_training_data_walk_forward():
+    """Verify walk-forward training uses the expanding context before final fold."""
+    data = pl.DataFrame({"Close": list(range(60))})
+    training_data = get_training_data(data, walk_forward=True, n_folds=5)
+    assert len(training_data) == 50
+    assert training_data["Close"][0] == 0
+    assert training_data["Close"][-1] == 49
 
 
 def test_get_final_backtest_data_uses_validation_split():
