@@ -14,11 +14,8 @@ from quant_trading_strategy_backtester.strategy_params import (
 
 class MovingAverageCrossoverStrategy(BaseStrategy):
     """
-    Implements the moving average crossover strategy, which is based on the
-    crossover of short-term and long-term moving averages of the closing price.
-    This strategy aims to identify and follows market trends. The short-term
-    moving average is more responsive to price changes, while the long-term
-    moving average represents the overall trend direction.
+    Implements the moving average crossover strategy with an engineered 
+    noise-filtering threshold buffer to minimize execution whipsawing.
 
     Attributes:
         params: A dictionary containing the strategy parameters.
@@ -30,23 +27,20 @@ class MovingAverageCrossoverStrategy(BaseStrategy):
         # The number of days for the short-term and long-term moving average.
         self.short_window = int(params["short_window"])
         self.long_window = int(params["long_window"])
+        
+        # --- B. Mahath Custom Implementation: Fetch Crossover Threshold ---
+        # Defaulting to 0.0 if not specified to maintain backward compatibility
+        self.crossover_threshold = float(params.get("crossover_threshold", 0.0))
 
     def generate_signals(self, data: pl.DataFrame) -> pl.DataFrame:
         """
-        Generates trading signals for the given data.
-
-        A buy signal (1) is generated when the short-term moving average
-        crosses above the long-term moving average. The strategy maintains the
-        position until the short-term moving average crosses below the
-        long-term moving average.
+        Generates trading signals for the given data using Polars expression engines.
 
         Args:
-            data: A DataFrame containing the price data. Must have a 'Close'
-                  column.
+            data: A DataFrame containing the price data. Must have a 'Close' column.
 
         Returns:
-            A DataFrame containing the generated trading signals. Columns
-            include 'signal', 'short_mavg', 'long_mavg', and 'position_change'.
+            A DataFrame containing the generated trading signals.
         """
         if data.is_empty():
             return pl.DataFrame(
@@ -82,9 +76,10 @@ class MovingAverageCrossoverStrategy(BaseStrategy):
             )
             .with_columns(
                 [
-                    # If the short-term moving average is above the long-term
-                    # moving average, generate a buy signal.
-                    pl.when(pl.col("short_mavg") > pl.col("long_mavg"))
+                    # --- B. Mahath Custom Implementation: Noise-Filtering Logic ---
+                    # A buy signal (1) is only generated when the short-term moving average 
+                    # exceeds the long-term moving average by a defined safety buffer percentage.
+                    pl.when(pl.col("short_mavg") > (pl.col("long_mavg") * (1 + self.crossover_threshold)))
                     .then(1.0)
                     .otherwise(0.0)
                     .alias("signal")

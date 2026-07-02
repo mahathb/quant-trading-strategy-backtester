@@ -735,9 +735,10 @@ def main():
     displays the results.
     """
     st.title("Quant Trading Strategy Backtester")
+    st.caption("Optimized and Extended by B. Mahath")
 
     # Get user inputs
-    ticker, start_date, end_date, strategy_type, auto_select_tickers = (
+    ticker, start_date, end_date, strategy_type, auto_select_tickers, default_fee = (
         get_user_inputs_except_strategy_params()
     )
     optimise, walk_forward, strategy_params = get_user_inputs_for_strategy_params(

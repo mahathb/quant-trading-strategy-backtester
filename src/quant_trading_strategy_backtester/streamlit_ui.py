@@ -63,12 +63,26 @@ def get_user_inputs_except_strategy_params() -> tuple[
     start_date = st.sidebar.date_input("Start Date", value=datetime.date(2020, 1, 1))
     end_date = st.sidebar.date_input("End Date", value=datetime.date(2023, 12, 31))
 
+    # --- B. Mahath Custom Fee Presets ---
+    fee_tier = st.sidebar.selectbox(
+        "Broker Fee Preset", 
+        ["Zero Fees", "Retail Broker (0.10%)", "Institutional Tier (0.02%)"]
+    )
+
+    if fee_tier == "Zero Fees":
+        default_fee = 0.0
+    elif fee_tier == "Retail Broker (0.10%)":
+        default_fee = 0.001
+    else:
+        default_fee = 0.0002
+
     return (
         ticker,
         start_date,
         end_date,
         strategy_type,
         auto_select_tickers,
+        default_fee,
     )
 
 
@@ -90,6 +104,7 @@ def get_optimisation_ranges(strategy_type: str) -> dict[str, Any]:
             return {
                 "short_window": range(5, 51, 5),
                 "long_window": range(20, 201, 20),
+                "crossover_threshold": [0.0, 0.005, 0.01, 0.02, 0.03]  # --- B. Mahath Custom Optimization Range ---
             }
         case "Mean Reversion":
             return {
@@ -124,16 +139,26 @@ def get_fixed_params(strategy_type: str) -> dict[str, Any]:
     match strategy_type:
         case "Moving Average Crossover":
             short_window = st.sidebar.slider(
-                "Short Window (Days)", min_value=5, max_value=50, value=20
+                "Short Window (Days)", min_value=5, max_value=150, value=20
             )
             long_window_min = max(20, short_window + 1)
             long_window = st.sidebar.slider(
                 "Long Window (Days)",
                 min_value=long_window_min,
-                max_value=200,
+                max_value=500,
                 value=max(50, long_window_min),
             )
-            return {"short_window": short_window, "long_window": long_window}
+            # --- B. Mahath Custom Threshold UI Slider ---
+            crossover_threshold = st.sidebar.slider(
+                "Crossover Noise Filter (%)", 
+                min_value=0.0, 
+                max_value=0.05, 
+                value=0.0, 
+                step=0.001,
+                format="%.3f",
+                help="Requires the short moving average to clear the long moving average by this percentage buffer to trigger a trade signal."
+            )
+            return {"short_window": short_window, "long_window": long_window, "crossover_threshold": crossover_threshold}
         case "Mean Reversion":
             window = st.sidebar.slider(
                 "Window (Days)", min_value=5, max_value=100, value=20

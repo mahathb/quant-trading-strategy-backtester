@@ -25,6 +25,14 @@ def validate_strategy_params(strategy_type: str, params: Mapping[str, Any]) -> N
             long_window = _require_positive_int(params, "long_window")
             if short_window >= long_window:
                 raise ValueError("short_window must be less than long_window")
+            # --- B. Mahath Custom Guardrails ---
+            if long_window > 365:
+                raise ValueError("long_window cannot exceed 365 days to maintain historical lookback integrity")
+            # Allow an optional threshold parameter to filter out noise
+            if "crossover_threshold" in params:
+                threshold = float(params["crossover_threshold"])
+                if threshold < 0:
+                    raise ValueError("crossover_threshold must be a positive percentage value")
         case "Mean Reversion":
             _require_positive_int(params, "window")
             _require_positive_float(params, "std_dev")
