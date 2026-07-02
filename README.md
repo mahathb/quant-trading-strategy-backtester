@@ -40,7 +40,7 @@ _Try the deployed app
 
 ---
 
-## Enhancements & Architectural Extensions by B. Mahath
+## Enhancements & Architectural Extensions
 
 To transition this open-source backtester into a production-grade simulation environment, I engineered a multi-file structural pipeline that enforces institutional trading realities, risk constraints, and signal optimization:
 
