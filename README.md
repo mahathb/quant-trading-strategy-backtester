@@ -38,6 +38,26 @@ _Try the deployed app
 - **Real-time data fetching** – adjusted historical market data from Yahoo
   Finance
 
+---
+
+## Enhancements & Architectural Extensions by B. Mahath
+
+To transition this open-source backtester into a production-grade simulation environment, I engineered a multi-file structural pipeline that enforces institutional trading realities, risk constraints, and signal optimization:
+
+### 1. Robust Input Validation & Core Guardrails (`strategy_params.py`)
+* **Memory and Performance Safety:** Integrated strict runtime exception boundaries within the parameter validation framework. 
+* **Lookback Caps:** Enforced a `365-day` hard ceiling constraint on moving average windows to prevent unbounded array operations from degrading vectorized computing performance or causing out-of-memory context failure.
+
+### 2. Signal Threshold Filtering & Noise Reduction (`moving_average_crossover.py`)
+* **Whipsaw Mitigation:** Re-engineered the core Polars execution engine to support an adjustable `crossover_threshold` safety buffer percentage.
+* **Vectorized Band Testing:** Instead of flat baseline evaluation intersections, the modified strategy forces the short-term moving average to clear the long-term moving average by a variable band premium ($short\_mavg > long\_mavg \times (1 + threshold)$), filtering out minor market noise and reducing unprofitable transaction churn.
+
+### 3. Interactive Component & Multi-File Integration (`streamlit_ui.py`)
+* **Dynamic Parameter Control:** Extended the Streamlit frontend layout by mapping custom input sliders (`Crossover Noise Filter (%)` and expanded lookback metrics) smoothly into the backend configuration pipeline.
+* **Brokerage Optimization:** Updated the optimization range grids to seamlessly execute multi-dimensional matrix checks with the new parameters under the Polars lazy evaluation layout.
+
+---
+
 ## Methodology Notes
 
 - **Pairs trading** uses a rolling hedge ratio to build the spread and
